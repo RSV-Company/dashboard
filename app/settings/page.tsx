@@ -1,12 +1,12 @@
-import { DashboardOverview } from "@/components/dashboard-overview"
+import { SettingsPage } from "@/components/settings-page"
 import { ProtectedRoute } from "@/components/protected-route"
 import { AdminLayout } from "@/components/admin-layout"
 
-export default function DashboardPage() {
+export default function Settings() {
   return (
-    <ProtectedRoute requiredPermission="view_dashboard">
+    <ProtectedRoute requiredPermission="view_settings">
       <AdminLayout>
-        <DashboardOverview />
+        <SettingsPage />
       </AdminLayout>
     </ProtectedRoute>
   )

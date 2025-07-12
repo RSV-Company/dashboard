@@ -1,12 +1,12 @@
-import { DashboardOverview } from "@/components/dashboard-overview"
+import { CustomersPage } from "@/components/customers-page"
 import { ProtectedRoute } from "@/components/protected-route"
 import { AdminLayout } from "@/components/admin-layout"
 
-export default function DashboardPage() {
+export default function Customers() {
   return (
-    <ProtectedRoute requiredPermission="view_dashboard">
+    <ProtectedRoute requiredPermission="view_customers">
       <AdminLayout>
-        <DashboardOverview />
+        <CustomersPage />
       </AdminLayout>
     </ProtectedRoute>
   )
