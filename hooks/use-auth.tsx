@@ -26,6 +26,8 @@ const rolePermissions = {
     "view_dashboard",
     "manage_inventory",
     "view_inventory",
+    "manage_brands",
+    "view_brands",
     "manage_orders",
     "view_orders",
     "manage_categories",

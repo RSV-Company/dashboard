@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { BarChart3, Package, ShoppingCart, Tags, Home, Settings, Users, LogOut } from "lucide-react"
+import { BarChart3, Package, ShoppingCart, Tags, Home, Settings, Users, LogOut, Truck } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
 
 const sidebarNavItems = [
@@ -33,6 +33,12 @@ const sidebarNavItems = [
     title: "Categories",
     href: "/categories",
     icon: Tags,
+    permission: "view_categories",
+  },
+  {
+    title: "Brands",
+    href: "/brands",
+    icon: Truck,
     permission: "view_categories",
   },
   {
