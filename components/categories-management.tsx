@@ -102,7 +102,7 @@ export function CategoriesManagement() {
         setIsLoading(false)
       }
     },
-    []
+    [supabase]
   )
 
   // Fetch categories when page or debounced search term changes
@@ -146,7 +146,7 @@ export function CategoriesManagement() {
         description: error.message,
       })
     }
-  }, [newCategory, debouncedSearchTerm, fetchCategories])
+  }, [newCategory.name, newCategory.slug, supabase, fetchCategories, debouncedSearchTerm])
 
   const handleEditCategory = useCallback(async () => {
     if (!categoryToEdit || !editCategory.name.trim() || !editCategory.slug.trim()) {
@@ -186,7 +186,7 @@ export function CategoriesManagement() {
         description: error.message,
       })
     }
-  }, [categoryToEdit, editCategory, debouncedSearchTerm, fetchCategories])
+  }, [categoryToEdit, editCategory.name, editCategory.slug, supabase, fetchCategories, debouncedSearchTerm])
 
   const handleDeleteCategory = useCallback(async () => {
     if (!categoryToDelete) return
@@ -214,7 +214,7 @@ export function CategoriesManagement() {
         description: error.message,
       })
     }
-  }, [categoryToDelete, debouncedSearchTerm, fetchCategories])
+  }, [categoryToDelete, debouncedSearchTerm, fetchCategories, supabase])
 
   const openEditDialog = useCallback((category: Category) => {
     setCategoryToEdit(category)
