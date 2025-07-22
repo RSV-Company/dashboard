@@ -1,6 +1,7 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -15,83 +16,274 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Textarea } from "@/components/ui/textarea"
-import { MoreHorizontal, Plus, Search, Trash2, Edit, Tag } from "lucide-react"
+import { Trash2, Plus, Search, Tag, MoreHorizontal, Edit } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { useAuth } from "@/hooks/use-auth"
+import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
+import { useDebounce } from "@/lib/helpers/debounce"
 
-const mockCategories = [
-  {
-    id: 1,
-    name: "Electronics",
-    description: "Electronic devices and accessories",
-    productCount: 45,
-    createdAt: "2024-01-01",
-  },
-  {
-    id: 2,
-    name: "Clothing",
-    description: "Fashion and apparel items",
-    productCount: 120,
-    createdAt: "2024-01-02",
-  },
-  {
-    id: 3,
-    name: "Home & Garden",
-    description: "Home improvement and garden supplies",
-    productCount: 78,
-    createdAt: "2024-01-03",
-  },
-  {
-    id: 4,
-    name: "Books",
-    description: "Books and educational materials",
-    productCount: 32,
-    createdAt: "2024-01-04",
-  },
-  {
-    id: 5,
-    name: "Sports & Outdoors",
-    description: "Sports equipment and outdoor gear",
-    productCount: 56,
-    createdAt: "2024-01-05",
-  },
-]
+interface Category {
+  id: string
+  name: string
+  slug: string
+  created_at: string
+  product_count: number
+}
 
 export function CategoriesManagement() {
-  const [categories, setCategories] = useState(mockCategories)
+  const [categories, setCategories] = useState<Category[]>([])
   const [searchTerm, setSearchTerm] = useState("")
+  const debouncedSearchTerm = useDebounce(searchTerm, 500)
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [editingCategory, setEditingCategory] = useState<any>(null)
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [categoryToEdit, setCategoryToEdit] = useState<Category | null>(null)
+  const [categoryToDelete, setCategoryToDelete] = useState<Category | null>(null)
+  const [newCategory, setNewCategory] = useState({ name: "", slug: "" })
+  const [editCategory, setEditCategory] = useState({ name: "", slug: "" })
+  const [isLoading, setIsLoading] = useState(true)
+  const [page, setPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+  const pageSize = 10
+  const { hasPermission } = useAuth()
+  const supabase = createClient()
 
-  const filteredCategories = categories.filter(
-    (category) =>
-      category.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      category.description.toLowerCase().includes(searchTerm.toLowerCase()),
+  // Generate slug from name
+  const generateSlug = (name: string) => {
+    return name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+  }
+
+  // Fetch categories with pagination, search, and product count
+  const fetchCategories = useCallback(
+    async (pageNum: number, search: string) => {
+      setIsLoading(true)
+      try {
+        let query = supabase
+          .from("categories")
+          .select(
+            `
+            id,
+            name,
+            slug,
+            created_at,
+            product_count:products(count)
+          `,
+            { count: "exact" }
+          )
+          .order("name", { ascending: true })
+          .range((pageNum - 1) * pageSize, pageNum * pageSize - 1)
+
+        if (search.trim()) {
+          query = query.or(`name.ilike.%${search.trim()}%,slug.ilike.%${search.trim()}%`)
+        }
+
+        const { data, error, count } = await query
+        if (error) throw error
+
+        const formattedCategories = data.map((category: any) => ({
+          id: category.id,
+          name: category.name,
+          slug: category.slug,
+          created_at: new Date(category.created_at).toISOString().split("T")[0],
+          product_count: category.product_count[0]?.count || 0,
+        }))
+
+        setCategories(formattedCategories)
+        setTotalPages(Math.ceil((count || 0) / pageSize))
+      } catch (error: any) {
+        toast.error("Error", {
+          description: error.message,
+        })
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [supabase]
   )
 
-  const handleDeleteCategory = (id: number) => {
-    setCategories(categories.filter((category) => category.id !== id))
-  }
+  // Fetch categories when page or debounced search term changes
+  useEffect(() => {
+    fetchCategories(page, debouncedSearchTerm)
+  }, [page, debouncedSearchTerm, fetchCategories])
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handleEditCategory = (category: any) => {
-    setEditingCategory(category)
-    setIsEditDialogOpen(true)
-  }
-
-  const handleAddCategory = () => {
-    // In a real app, this would make an API call
-    const newCategory = {
-      id: categories.length + 1,
-      name: "New Category",
-      description: "New category description",
-      productCount: 0,
-      createdAt: new Date().toISOString().split("T")[0],
+  const handleAddCategory = useCallback(async () => {
+    if (!newCategory.name.trim() || !newCategory.slug.trim()) {
+      toast.error("Error", {
+        description: "Category name and slug cannot be empty",
+      })
+      return
     }
-    setCategories([...categories, newCategory])
-    setIsAddDialogOpen(false)
+
+    try {
+      const { error } = await supabase
+        .from("categories")
+        .insert({ name: newCategory.name.trim(), slug: newCategory.slug.trim() })
+        .select()
+        .single()
+      if (error) {
+        if (error.code === "23505") {
+          toast.error("Error", {
+            description: "Category name or slug already exists",
+          })
+        } else {
+          throw error
+        }
+        return
+      }
+      setPage(1)
+      await fetchCategories(1, debouncedSearchTerm)
+      setNewCategory({ name: "", slug: "" })
+      setIsAddDialogOpen(false)
+      toast.success("Success", {
+        description: "Category added successfully",
+      })
+    } catch (error: any) {
+      toast.error("Error", {
+        description: error.message,
+      })
+    }
+  }, [newCategory.name, newCategory.slug, supabase, fetchCategories, debouncedSearchTerm])
+
+  const handleEditCategory = useCallback(async () => {
+    if (!categoryToEdit || !editCategory.name.trim() || !editCategory.slug.trim()) {
+      toast.error("Error", {
+        description: "Category name and slug cannot be empty",
+      })
+      return
+    }
+
+    try {
+      const { error } = await supabase
+        .from("categories")
+        .update({ name: editCategory.name.trim(), slug: editCategory.slug.trim() })
+        .eq("id", categoryToEdit.id)
+        .select()
+        .single()
+      if (error) {
+        if (error.code === "23505") {
+          toast.error("Error", {
+            description: "Category name or slug already exists",
+          })
+        } else {
+          throw error
+        }
+        return
+      }
+      setPage(1)
+      await fetchCategories(1, debouncedSearchTerm)
+      setEditCategory({ name: "", slug: "" })
+      setCategoryToEdit(null)
+      setIsEditDialogOpen(false)
+      toast.success("Success", {
+        description: "Category updated successfully",
+      })
+    } catch (error: any) {
+      toast.error("Error", {
+        description: error.message,
+      })
+    }
+  }, [categoryToEdit, editCategory.name, editCategory.slug, supabase, fetchCategories, debouncedSearchTerm])
+
+  const handleDeleteCategory = useCallback(async () => {
+    if (!categoryToDelete) return
+    try {
+      const { error } = await supabase.from("categories").delete().eq("id", categoryToDelete.id)
+      if (error) {
+        if (error.code === "23503") {
+          toast.error("Error", {
+            description: "Cannot delete category because it is associated with products",
+          })
+        } else {
+          throw error
+        }
+        return
+      }
+      setPage(1)
+      await fetchCategories(1, debouncedSearchTerm)
+      setIsDeleteDialogOpen(false)
+      setCategoryToDelete(null)
+      toast.success("Success", {
+        description: "Category deleted successfully",
+      })
+    } catch (error: any) {
+      toast.error("Error", {
+        description: error.message,
+      })
+    }
+  }, [categoryToDelete, debouncedSearchTerm, fetchCategories, supabase])
+
+  const openEditDialog = useCallback((category: Category) => {
+    setCategoryToEdit(category)
+    setEditCategory({ name: category.name, slug: category.slug })
+    setIsEditDialogOpen(true)
+  }, [])
+
+  const openDeleteDialog = useCallback((category: Category) => {
+    setCategoryToDelete(category)
+    setIsDeleteDialogOpen(true)
+  }, [])
+
+  const handlePageChange = useCallback((newPage: number) => {
+    if (newPage >= 1 && newPage <= totalPages) {
+      setPage(newPage)
+    }
+  }, [totalPages])
+
+  // Memoize table content to prevent rerenders
+  const tableContent = useMemo(() => (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Name</TableHead>
+          <TableHead>Slug</TableHead>
+          <TableHead>Products</TableHead>
+          <TableHead>Created</TableHead>
+          <TableHead className="text-right">Actions</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {categories.map((category) => (
+          <TableRow key={category.id}>
+            <TableCell className="font-medium">{category.name}</TableCell>
+            <TableCell>{category.slug}</TableCell>
+            <TableCell>{category.product_count}</TableCell>
+            <TableCell>{category.created_at}</TableCell>
+            <TableCell className="text-right">
+              {hasPermission("manage_categories") && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" className="h-8 w-8 p-0">
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => openEditDialog(category)}>
+                      <Edit className="mr-2 h-4 w-4" />
+                      Edit
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      className="text-red-600"
+                      onClick={() => openDeleteDialog(category)}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  ), [categories, hasPermission, openEditDialog, openDeleteDialog])
+
+  if (isLoading) {
+    return <div>Loading...</div>
   }
 
   return (
@@ -99,44 +291,134 @@ export function CategoriesManagement() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Categories Management</h2>
-          <p className="text-muted-foreground">Organize your products with categories</p>
+          <p className="text-muted-foreground">Manage your product categories</p>
         </div>
-        <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="mr-2 h-4 w-4" />
-              Add Category
-            </Button>
-          </DialogTrigger>
+        {hasPermission("manage_categories") && (
+          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+            <DialogTrigger asChild>
+              <Button>
+                <Plus className="mr-2 h-4 w-4" />
+                Add Category
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[425px]">
+              <DialogHeader>
+                <DialogTitle>Add New Category</DialogTitle>
+                <DialogDescription>
+                  Add a new category to your inventory. Enter a unique name and slug.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-4 py-4">
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="category-name" className="text-right">
+                    Name
+                  </Label>
+                  <Input
+                    id="category-name"
+                    placeholder="Category name"
+                    className="col-span-3"
+                    value={newCategory.name}
+                    onChange={(e) => {
+                      const name = e.target.value
+                      setNewCategory({ name, slug: generateSlug(name) })
+                    }}
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="category-slug" className="text-right">
+                    Slug
+                  </Label>
+                  <Input
+                    id="category-slug"
+                    placeholder="category-slug"
+                    className="col-span-3"
+                    value={newCategory.slug}
+                    onChange={(e) => setNewCategory({ ...newCategory, slug: e.target.value })}
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button type="submit" onClick={handleAddCategory}>
+                  Add Category
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
+      </div>
+
+      {hasPermission("manage_categories") && categoryToEdit && (
+        <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
           <DialogContent className="sm:max-w-[425px]">
             <DialogHeader>
-              <DialogTitle>Add New Category</DialogTitle>
-              <DialogDescription>Create a new category to organize your products.</DialogDescription>
+              <DialogTitle>Edit Category</DialogTitle>
+              <DialogDescription>
+                Update the category name and slug.
+              </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="category-name" className="text-right">
+                <Label htmlFor="edit-category-name" className="text-right">
                   Name
                 </Label>
-                <Input id="category-name" placeholder="Category name" className="col-span-3" />
+                <Input
+                  id="edit-category-name"
+                  placeholder="Category name"
+                  className="col-span-3"
+                  value={editCategory.name}
+                  onChange={(e) => {
+                    const name = e.target.value
+                    setEditCategory({ name, slug: generateSlug(name) })
+                  }}
+                />
               </div>
               <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="category-description" className="text-right">
-                  Description
+                <Label htmlFor="edit-category-slug" className="text-right">
+                  Slug
                 </Label>
-                <Textarea id="category-description" placeholder="Category description" className="col-span-3" />
+                <Input
+                  id="edit-category-slug"
+                  placeholder="category-slug"
+                  className="col-span-3"
+                  value={editCategory.slug}
+                  onChange={(e) => setEditCategory({ ...editCategory, slug: e.target.value })}
+                />
               </div>
             </div>
             <DialogFooter>
-              <Button type="submit" onClick={handleAddCategory}>
-                Add Category
+              <Button variant="outline" onClick={() => setIsEditDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" onClick={handleEditCategory}>
+                Save Changes
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
+      )}
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      {hasPermission("manage_categories") && categoryToDelete && (
+        <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+          <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+              <DialogTitle>Confirm Deletion</DialogTitle>
+              <DialogDescription>
+                Are you sure you want to delete the category &quot;{categoryToDelete.name}&quot;? This action cannot be undone unless the category is not associated with any products.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsDeleteDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={handleDeleteCategory}>
+                Delete
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Categories</CardTitle>
@@ -152,7 +434,7 @@ export function CategoriesManagement() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {categories.reduce((sum, category) => sum + category.productCount, 0)}
+              {categories.reduce((sum, category) => sum + category.product_count, 0)}
             </div>
           </CardContent>
         </Card>
@@ -161,19 +443,10 @@ export function CategoriesManagement() {
             <CardTitle className="text-sm font-medium">Largest Category</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{Math.max(...categories.map((c) => c.productCount))}</div>
-            <p className="text-xs text-muted-foreground">products</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Average Products</CardTitle>
-          </CardHeader>
-          <CardContent>
             <div className="text-2xl font-bold">
-              {Math.round(categories.reduce((sum, category) => sum + category.productCount, 0) / categories.length)}
+              {Math.max(...categories.map((c) => c.product_count), 0)}
             </div>
-            <p className="text-xs text-muted-foreground">per category</p>
+            <p className="text-xs text-muted-foreground">products</p>
           </CardContent>
         </Card>
       </div>
@@ -181,11 +454,11 @@ export function CategoriesManagement() {
       <Card>
         <CardHeader>
           <CardTitle>Categories</CardTitle>
-          <CardDescription>Manage your product categories</CardDescription>
+          <CardDescription>View and manage your categories</CardDescription>
           <div className="flex items-center space-x-2">
             <Search className="h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search categories..."
+              placeholder="Search by name or slug..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="max-w-sm"
@@ -193,80 +466,36 @@ export function CategoriesManagement() {
           </div>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Description</TableHead>
-                <TableHead>Products</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredCategories.map((category) => (
-                <TableRow key={category.id}>
-                  <TableCell className="font-medium">{category.name}</TableCell>
-                  <TableCell className="max-w-[300px] truncate">{category.description}</TableCell>
-                  <TableCell>{category.productCount}</TableCell>
-                  <TableCell>{category.createdAt}</TableCell>
-                  <TableCell className="text-right">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" className="h-8 w-8 p-0">
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => handleEditCategory(category)}>
-                          <Edit className="mr-2 h-4 w-4" />
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem className="text-red-600" onClick={() => handleDeleteCategory(category.id)}>
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
+          {tableContent}
+          <div className="flex items-center justify-between mt-4">
+            <Button
+              variant="outline"
+              disabled={page === 1}
+              onClick={() => handlePageChange(page - 1)}
+            >
+              Previous
+            </Button>
+            <div className="flex items-center gap-2">
+              {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
+                <Button
+                  key={pageNum}
+                  variant={pageNum === page ? "default" : "outline"}
+                  onClick={() => handlePageChange(pageNum)}
+                >
+                  {pageNum}
+                </Button>
               ))}
-            </TableBody>
-          </Table>
+            </div>
+            <Button
+              variant="outline"
+              disabled={page === totalPages}
+              onClick={() => handlePageChange(page + 1)}
+            >
+              Next
+            </Button>
+          </div>
         </CardContent>
       </Card>
-
-      <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>Edit Category</DialogTitle>
-            <DialogDescription>Update the category information.</DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="edit-category-name" className="text-right">
-                Name
-              </Label>
-              <Input id="edit-category-name" defaultValue={editingCategory?.name} className="col-span-3" />
-            </div>
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="edit-category-description" className="text-right">
-                Description
-              </Label>
-              <Textarea
-                id="edit-category-description"
-                defaultValue={editingCategory?.description}
-                className="col-span-3"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button type="submit" onClick={() => setIsEditDialogOpen(false)}>
-              Save Changes
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
