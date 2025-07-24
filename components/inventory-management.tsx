@@ -42,6 +42,7 @@ interface Product {
   discount_price: number | null;
   stock_quantity: number;
   description: string | null;
+  specifications: { [key: string]: string } | null;
   is_featured: boolean;
   is_best_selling: boolean;
   status: string;
@@ -67,6 +68,7 @@ interface FormData {
   discount_price: string;
   stock_quantity: string;
   description: string;
+  specifications: string;
   is_featured: boolean;
   is_best_selling: boolean;
   main_image: File | null;
@@ -96,7 +98,7 @@ interface ProductTableProps {
 interface ImageManagementModalProps {
   product: Product | null;
   onClose: () => void;
-  onSave: (productId: string, images: { id: string; image_url: string }[]) => Promise<void>;
+  onSave: (productId: string, mainImageUrl: string | null, additionalImages: { id: string; image_url: string }[]) => Promise<void>;
 }
 
 const supabase = createClient();
@@ -107,23 +109,31 @@ function ProductForm({ initialData, categories, brands, onSubmit, onCancel, isEd
   function handleSubmit() {
     console.log("handleSubmit called with formData:", formData);
     toast.info("Debug: Attempting to submit form");
-	console.log("formdata: ",formData)
     if (!formData.title || !formData.slug || !formData.category_id || !formData.brand_id || !formData.price || !formData.stock_quantity) {
-		console.log(formData.title)
-		console.log(formData.slug,)
-		console.log(formData.category_id,)
-		console.log(formData.brand_id,)
-		console.log(formData.price)
-		console.log(formData.stock_quantity)
-
-		console.log(!formData.title,!formData.slug,!formData.category_id,!formData.brand_id,!formData.price,!formData.stock_quantity)
-
+      console.log("Validation failed:", {
+        title: formData.title,
+        slug: formData.slug,
+        category_id: formData.category_id,
+        brand_id: formData.brand_id,
+        price: formData.price,
+        stock_quantity: formData.stock_quantity,
+      });
       toast.error("Error", { description: "Please fill in all required fields (Name, SKU, Category, Brand, Price, Stock)" });
       return;
     }
     if (!isEdit && !formData.main_image) {
       toast.error("Error", { description: "Main Image is required for new products" });
       return;
+    }
+    // Validate specifications JSON
+    if (formData.specifications) {
+      try {
+        JSON.parse(formData.specifications);
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      } catch (error) {
+        toast.error("Error", { description: "Specifications must be valid JSON (e.g., {\"key\": \"value\"})" });
+        return;
+      }
     }
     onSubmit(formData);
   }
@@ -169,6 +179,7 @@ function ProductForm({ initialData, categories, brands, onSubmit, onCancel, isEd
     { id: "discount_price", label: "Discount Price", type: "number", placeholder: "0.00 (optional)" },
     { id: "stock_quantity", label: "Stock", type: "number", placeholder: "0" },
     { id: "description", label: "Description", type: "textarea", placeholder: "Detailed product description (supports Markdown, e.g., **bold**, *italic*, - lists)" },
+    { id: "specifications", label: "Specifications", type: "textarea", placeholder: 'Enter specifications as JSON (e.g., {"color": "Red", "size": "Medium"})' },
     { id: "is_featured", label: "Featured", type: "checkbox" },
     { id: "is_best_selling", label: "Best Selling", type: "checkbox" },
   ];
@@ -279,13 +290,23 @@ function ProductForm({ initialData, categories, brands, onSubmit, onCancel, isEd
 }
 
 function ImageManagementModal({ product, onClose, onSave }: ImageManagementModalProps) {
+  const [mainImage, setMainImage] = useState<string | null>(product?.main_image_url || null);
   const [images, setImages] = useState<{ id: string; image_url: string }[]>(product?.additional_images || []);
   const [newImages, setNewImages] = useState<File[]>([]);
   const [newPreviews, setNewPreviews] = useState<string[]>([]);
+  const [newMainImage, setNewMainImage] = useState<File | null>(null);
+  const [newMainImagePreview, setNewMainImagePreview] = useState<string | null>(null);
 
-  function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleImageChange(e: React.ChangeEvent<HTMLInputElement>, isMainImage: boolean) {
     const files = e.target.files;
-    if (files) {
+    if (!files) return;
+    if (isMainImage) {
+      const file = files[0];
+      if (file) {
+        setNewMainImage(file);
+        setNewMainImagePreview(URL.createObjectURL(file));
+      }
+    } else {
       const newFiles = Array.from(files);
       setNewImages([...newImages, ...newFiles]);
       setNewPreviews([...newPreviews, ...newFiles.map(URL.createObjectURL)]);
@@ -301,19 +322,32 @@ function ImageManagementModal({ product, onClose, onSave }: ImageManagementModal
     }
   }
 
+  function removeMainImage() {
+    setMainImage(null);
+    setNewMainImage(null);
+    setNewMainImagePreview(null);
+  }
+
   async function handleSave() {
     if (!product) return;
     try {
+      // Upload new main image if provided
+      let mainImageUrl = mainImage;
+      if (newMainImage) {
+        mainImageUrl = await uploadImageToS3(newMainImage, mainImage?.split("/").pop());
+      }
+
+      // Upload new additional images
       const uploadedImages = await Promise.all(
         newImages.map(async (file) => ({
           id: crypto.randomUUID(),
           image_url: await uploadImageToS3(file),
         }))
       );
-      await onSave(product.id, [...images, ...uploadedImages]);
+
+      await onSave(product.id, mainImageUrl, [...images, ...uploadedImages]);
       onClose();
-    } 
-    catch (error: any) {
+    } catch (error: any) {
       console.error("ImageManagementModal handleSave error:", error);
       toast.error("Error", { description: error.message });
     }
@@ -324,23 +358,55 @@ function ImageManagementModal({ product, onClose, onSave }: ImageManagementModal
       <DialogContent className="sm:max-w-[600px]">
         <DialogHeader>
           <DialogTitle>Manage Images for {product?.title}</DialogTitle>
-          <DialogDescription>Add, remove, or view additional product images.</DialogDescription>
+          <DialogDescription>Add, remove, or view main and additional product images.</DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="additional_images" className="text-right">Add Images</Label>
+            <Label htmlFor="main_image" className="text-right">Main Image</Label>
+            <Input
+              id="main_image"
+              type="file"
+              accept="image/jpeg,image/png"
+              className="col-span-3"
+              onChange={(e) => handleImageChange(e, true)}
+            />
+          </div>
+          {(mainImage || newMainImagePreview) && (
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label className="text-right">Main Image Preview</Label>
+              <div className="col-span-3 relative">
+                <Image
+                  src={newMainImagePreview || mainImage || "/placeholder.svg"}
+                  alt="Main Image"
+                  width={100}
+                  height={100}
+                  className="rounded-md object-cover"
+                />
+                <Button
+                  variant="destructive"
+                  size="icon"
+                  className="absolute top-0 right-0 h-6 w-6"
+                  onClick={removeMainImage}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="additional_images" className="text-right">Additional Images</Label>
             <Input
               id="additional_images"
               type="file"
               accept="image/jpeg,image/png"
               multiple
               className="col-span-3"
-              onChange={handleImageChange}
+              onChange={(e) => handleImageChange(e, false)}
             />
           </div>
           {(images.length > 0 || newPreviews.length > 0) && (
             <div className="grid grid-cols-4 items-center gap-4">
-              <Label className="text-right">Images</Label>
+              <Label className="text-right">Additional Images</Label>
               <div className="col-span-3 grid grid-cols-3 gap-2">
                 {images.map((image, index) => (
                   <div key={image.id} className="relative">
@@ -418,6 +484,7 @@ function ProductTable({ products, onEdit, onView, onDelete, onManageImages, hasP
     "Stock",
     "Images",
     "Description",
+    "Specifications",
     "Featured",
     "Best Selling",
     "Status",
@@ -439,6 +506,21 @@ function ProductTable({ products, onEdit, onView, onDelete, onManageImages, hasP
         <div className="flex items-center gap-2">
           <span className="truncate max-w-[150px]">{item.description || "-"}</span>
           {item.description && (
+            <Button variant="ghost" size="sm" onClick={() => onView(item)}>
+              <Eye className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: "specifications",
+      render: (item: Product) => (
+        <div className="flex items-center gap-2">
+          <span className="truncate max-w-[150px]">
+            {item.specifications ? JSON.stringify(item.specifications).slice(0, 20) + "..." : "-"}
+          </span>
+          {item.specifications && (
             <Button variant="ghost" size="sm" onClick={() => onView(item)}>
               <Eye className="h-4 w-4" />
             </Button>
@@ -475,7 +557,7 @@ function ProductTable({ products, onEdit, onView, onDelete, onManageImages, hasP
       <TableBody>
         {products.map((item) => (
           <TableRow key={item.id}>
-            <TableCell>
+            <TableCell className="">
               <Image
                 src={item.main_image_url || "/placeholder.svg"}
                 alt={item.title}
@@ -485,9 +567,9 @@ function ProductTable({ products, onEdit, onView, onDelete, onManageImages, hasP
               />
             </TableCell>
             {tableColumns.map((col) => (
-              <TableCell key={col.key}>{col.render(item)}</TableCell>
+              <TableCell key={col.key} className="border">{col.render(item)}</TableCell>
             ))}
-            <TableCell className="text-right">
+            <TableCell className="text-right ">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" className="h-8 w-8 p-0">
@@ -547,6 +629,7 @@ export function InventoryManagement() {
     discount_price: "",
     stock_quantity: "",
     description: "",
+    specifications: "",
     is_featured: false,
     is_best_selling: false,
     main_image: null,
@@ -595,6 +678,7 @@ export function InventoryManagement() {
           discount_price,
           stock_quantity,
           description,
+          specifications,
           is_featured,
           is_best_selling,
           category_id,
@@ -623,6 +707,7 @@ export function InventoryManagement() {
         discount_price: product.discount_price || null,
         stock_quantity: product.stock_quantity,
         description: product.description || "",
+        specifications: product.specifications || null,
         is_featured: product.is_featured || false,
         is_best_selling: product.is_best_selling || false,
         status:
@@ -671,6 +756,7 @@ export function InventoryManagement() {
         discount_price: data.discount_price ? parseFloat(data.discount_price) : null,
         stock_quantity: parseInt(data.stock_quantity),
         description: data.description,
+        specifications: data.specifications ? JSON.parse(data.specifications) : null,
         is_featured: data.is_featured,
         is_best_selling: data.is_best_selling,
         main_image_url,
@@ -725,8 +811,15 @@ export function InventoryManagement() {
     }
   }
 
-  async function handleImageSave(productId: string, newImages: { id: string; image_url: string }[]) {
+  async function handleImageSave(productId: string, mainImageUrl: string | null, newImages: { id: string; image_url: string }[]) {
     try {
+      // Update main image in products table
+      const { error: updateError } = await supabase
+        .from("products")
+        .update({ main_image_url: mainImageUrl })
+        .eq("id", productId);
+      if (updateError) throw updateError;
+
       // Fetch existing images
       const { data: existingImages, error: fetchError } = await supabase
         .from("product_images")
@@ -777,6 +870,7 @@ export function InventoryManagement() {
       discount_price: product.discount_price?.toString() || "",
       stock_quantity: product.stock_quantity.toString(),
       description: product.description || "",
+      specifications: product.specifications ? JSON.stringify(product.specifications, null, 2) : "",
       is_featured: product.is_featured,
       is_best_selling: product.is_best_selling,
       main_image: null,
@@ -920,11 +1014,26 @@ export function InventoryManagement() {
         <Dialog open={isViewDialogOpen} onOpenChange={setIsViewDialogOpen}>
           <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
-              <DialogTitle>{viewProduct.title} - Description</DialogTitle>
-              <DialogDescription>Detailed description of the product.</DialogDescription>
+              <DialogTitle>{viewProduct.title} - Details</DialogTitle>
+              <DialogDescription>Detailed description and specifications of the product.</DialogDescription>
             </DialogHeader>
-            <div className="prose max-w-none">
-              <ReactMarkdown>{viewProduct.description || "No description available."}</ReactMarkdown>
+            <div className="grid gap-4">
+              <div className="prose max-w-none">
+                <h3>Description</h3>
+                <ReactMarkdown>{viewProduct.description || "No description available."}</ReactMarkdown>
+              </div>
+              <div>
+                <h3>Specifications</h3>
+                {viewProduct.specifications ? (
+                  <ul>
+                    {Object.entries(viewProduct.specifications).map(([key, value]) => (
+                      <li key={key}><strong>{key}:</strong> {value}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>No specifications available.</p>
+                )}
+              </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setIsViewDialogOpen(false)}>Close</Button>
